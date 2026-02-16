@@ -334,8 +334,6 @@ impl EntityTrackingGenerator {
         self.schedule_quizzes(
             vocab,
             &names,
-            &entity_locations,
-            &entity_objects,
             &snapshots,
             &transfer_events,
             num_chunks,
@@ -349,8 +347,6 @@ impl EntityTrackingGenerator {
         &mut self,
         vocab: &mut Vocabulary,
         names: &[&str],
-        current_locations: &HashMap<String, String>,
-        current_objects: &HashMap<String, Vec<String>>,
         snapshots: &[WorldSnapshot],
         transfer_events: &[TransferEvent],
         num_chunks: usize,
@@ -390,7 +386,6 @@ impl EntityTrackingGenerator {
 
             let quiz_types = self.available_quiz_types(
                 names,
-                current_objects,
                 snapshots,
                 transfer_events,
                 chunk_idx,
@@ -407,8 +402,6 @@ impl EntityTrackingGenerator {
                 vocab,
                 &qt,
                 names,
-                current_locations,
-                current_objects,
                 snapshots,
                 transfer_events,
                 chunk_idx,
@@ -437,8 +430,6 @@ impl EntityTrackingGenerator {
                 vocab,
                 &qt,
                 names,
-                current_locations,
-                current_objects,
                 snapshots,
                 transfer_events,
                 chunk_idx,
@@ -452,24 +443,29 @@ impl EntityTrackingGenerator {
     fn available_quiz_types(
         &self,
         names: &[&str],
-        current_objects: &HashMap<String, Vec<String>>,
         snapshots: &[WorldSnapshot],
         transfer_events: &[TransferEvent],
         chunk_idx: usize,
     ) -> Vec<QuizType> {
+        let snapshot_idx = chunk_idx + 1;
+        if snapshot_idx >= snapshots.len() {
+            return vec![];
+        }
+        let current = &snapshots[snapshot_idx];
+
         let mut types = vec![QuizType::EntityLocation];
 
-        let has_objects = current_objects.values().any(|v| !v.is_empty());
+        let has_objects = current.entity_objects.values().any(|v| !v.is_empty());
         if has_objects {
             types.push(QuizType::ObjectHolder);
         }
 
         // Contradiction and TemporalDelta both require entity location changes.
         // Compute once to avoid duplicate logic.
-        if chunk_idx >= 2 && snapshots.len() > chunk_idx {
+        if chunk_idx >= 2 && snapshot_idx < snapshots.len() {
             let earlier_idx = if chunk_idx > 3 { chunk_idx - 3 } else { 0 };
             let earlier = &snapshots[earlier_idx];
-            let current = &snapshots[chunk_idx];
+            let current = &snapshots[snapshot_idx];
             let has_location_change = names.iter().any(|name| {
                 earlier.entity_locations.get(*name) != current.entity_locations.get(*name)
             });
@@ -495,19 +491,24 @@ impl EntityTrackingGenerator {
         vocab: &mut Vocabulary,
         quiz_type: &QuizType,
         names: &[&str],
-        current_locations: &HashMap<String, String>,
-        current_objects: &HashMap<String, Vec<String>>,
         snapshots: &[WorldSnapshot],
         transfer_events: &[TransferEvent],
         chunk_idx: usize,
         distance: usize,
     ) -> Option<Quiz> {
+        // Use snapshot at chunk_idx+1: state after processing chunk chunk_idx.
+        let snapshot_idx = chunk_idx + 1;
+        if snapshot_idx >= snapshots.len() {
+            return None;
+        }
+        let current = &snapshots[snapshot_idx];
+
         match quiz_type {
             QuizType::EntityLocation => {
                 let entity = names[self.rng.gen_range(0..names.len())];
                 let question = format!("where is {}", entity);
                 let question_tokens = vocab.encode(&question);
-                let correct_loc = current_locations.get(entity)?;
+                let correct_loc = current.entity_locations.get(entity)?;
                 let answer_idx = LOCATIONS.iter().position(|l| l == correct_loc)?;
                 Some(Quiz {
                     question_tokens,
@@ -521,7 +522,7 @@ impl EntityTrackingGenerator {
                 let holders: Vec<&&str> = names
                     .iter()
                     .filter(|n| {
-                        current_objects
+                        current.entity_objects
                             .get(**n)
                             .map(|v| !v.is_empty())
                             .unwrap_or(false)
@@ -531,7 +532,7 @@ impl EntityTrackingGenerator {
                     return None;
                 }
                 let holder = holders[self.rng.gen_range(0..holders.len())];
-                let objs = current_objects.get(*holder)?;
+                let objs = current.entity_objects.get(*holder)?;
                 let obj = &objs[self.rng.gen_range(0..objs.len())];
                 let question = format!("who holds the {}", obj);
                 let question_tokens = vocab.encode(&question);
@@ -545,12 +546,12 @@ impl EntityTrackingGenerator {
                 })
             }
             QuizType::Contradiction => {
-                if snapshots.len() <= chunk_idx {
+                if snapshot_idx >= snapshots.len() {
                     return None;
                 }
                 let earlier_idx = if chunk_idx > 3 { chunk_idx - 3 } else { 0 };
                 let earlier = &snapshots[earlier_idx];
-                let current = &snapshots[chunk_idx];
+                let current = &snapshots[snapshot_idx];
 
                 let moved_entities: Vec<&&str> = names
                     .iter()
@@ -591,12 +592,12 @@ impl EntityTrackingGenerator {
                 }
             }
             QuizType::TemporalDelta => {
-                if snapshots.len() <= chunk_idx {
+                if snapshot_idx >= snapshots.len() {
                     return None;
                 }
                 let earlier_idx = if chunk_idx > 3 { chunk_idx - 3 } else { 0 };
                 let earlier = &snapshots[earlier_idx];
-                let current = &snapshots[chunk_idx];
+                let current = &snapshots[snapshot_idx];
 
                 let changed_entities: Vec<(usize, &&str)> = names
                     .iter()
@@ -635,7 +636,7 @@ impl EntityTrackingGenerator {
                 let transfer = relevant[self.rng.gen_range(0..relevant.len())];
 
                 let holder = &transfer.to_entity;
-                let holder_loc = current_locations.get(holder.as_str())?;
+                let holder_loc = current.entity_locations.get(holder.as_str())?;
 
                 let question = format!("where is the {}", transfer.object);
                 let question_tokens = vocab.encode(&question);
