@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 const LOCATIONS: &[&str] = &[
     "kitchen", "garden", "bedroom", "office", "library", "park", "store", "bathroom", "garage",
-    "basement",
+    "basement", "attic", "hallway", "patio", "workshop", "studio", "cellar",
 ];
 
 const NAMES: &[&str] = &[
@@ -96,7 +96,8 @@ impl Vocabulary {
             "while", "before", "has", "had", "was", "with", "where", "what", "who", "holds",
             "carrying", "left", "dropped", "found", "lost", "happy", "sad", "alive", "not", "dead",
             "said", "told", "asked", "knows", "thinks", "believes", "saw", "still", "changed",
-            "no", "yes", "since", "between", "now", "chunk", "waited",
+            "no", "yes", "since", "between", "now", "chunk", "waited", "handed", "passed",
+            "remained", "stayed", "met", "behind", "for",
         ];
         for w in &filler_words {
             vocab.add_word(w);
@@ -208,13 +209,25 @@ impl EntityTrackingGenerator {
                     0 => {
                         let new_loc = LOCATIONS[self.rng.gen_range(0..LOCATIONS.len())];
                         entity_locations.insert(entity.to_string(), new_loc.to_string());
-                        format!("{} went to the {}", entity, new_loc)
+                        let movement_templates = [
+                            format!("{} went to the {}", entity, new_loc),
+                            format!("{} moved to the {}", entity, new_loc),
+                            format!("{} walked to the {}", entity, new_loc),
+                            format!("{} is now in the {}", entity, new_loc),
+                            format!("{} left for the {}", entity, new_loc),
+                        ];
+                        movement_templates[self.rng.gen_range(0..movement_templates.len())].clone()
                     }
                     1 => {
                         if !entity_objects[entity].is_empty() && self.rng.gen_bool(0.5) {
                             let obj_idx = self.rng.gen_range(0..entity_objects[entity].len());
                             let obj = entity_objects.get_mut(entity).unwrap().remove(obj_idx);
-                            format!("{} dropped the {}", entity, obj)
+                            let drop_templates = [
+                                format!("{} dropped the {}", entity, obj),
+                                format!("{} put down the {}", entity, obj),
+                                format!("{} left the {} behind", entity, obj),
+                            ];
+                            drop_templates[self.rng.gen_range(0..drop_templates.len())].clone()
                         } else {
                             let available: Vec<&str> = OBJECTS
                                 .iter()
@@ -229,7 +242,12 @@ impl EntityTrackingGenerator {
                                     .get_mut(entity)
                                     .unwrap()
                                     .push(obj.to_string());
-                                format!("{} picked up the {}", entity, obj)
+                                let pickup_templates = [
+                                    format!("{} picked up the {}", entity, obj),
+                                    format!("{} took the {}", entity, obj),
+                                    format!("{} found the {}", entity, obj),
+                                ];
+                                pickup_templates[self.rng.gen_range(0..pickup_templates.len())].clone()
                             } else {
                                 let loc = &entity_locations[entity];
                                 format!("{} is in the {}", entity, loc)
@@ -253,21 +271,57 @@ impl EntityTrackingGenerator {
                                     to_entity: other.to_string(),
                                     chunk_idx,
                                 });
-                                format!("{} gave the {} to {}", entity, obj, other)
+                                let transfer_templates = [
+                                    format!("{} gave the {} to {}", entity, obj, other),
+                                    format!("{} handed the {} to {}", entity, obj, other),
+                                    format!("{} passed the {} to {}", entity, obj, other),
+                                ];
+                                transfer_templates[self.rng.gen_range(0..transfer_templates.len())].clone()
                             } else {
-                                let loc = &entity_locations[entity];
-                                format!("{} saw {} in the {}", entity, other, loc)
+                                let entity_loc = &entity_locations[entity];
+                                let other_loc = &entity_locations[other];
+                                let see_templates: Vec<String> = if entity_loc == other_loc {
+                                    vec![
+                                        format!("{} saw {} in the {}", entity, other, entity_loc),
+                                        format!("{} met {} in the {}", entity, other, entity_loc),
+                                        format!("{} was with {} in the {}", entity, other, entity_loc),
+                                    ]
+                                } else {
+                                    vec![format!("{} saw {} in the {}", entity, other, other_loc)]
+                                };
+                                see_templates[self.rng.gen_range(0..see_templates.len())].clone()
                             }
                         } else {
                             let loc = &entity_locations[entity];
-                            format!("{} waited in the {}", entity, loc)
+                            let wait_templates = [
+                                format!("{} waited in the {}", entity, loc),
+                                format!("{} stayed in the {}", entity, loc),
+                                format!("{} remained in the {}", entity, loc),
+                            ];
+                            wait_templates[self.rng.gen_range(0..wait_templates.len())].clone()
                         }
                     }
                 };
                 sentences.push(sentence);
             }
 
-            let chunk_text = sentences.join(" then ");
+            let connectors = [" then ", " after that ", " later ", " next "];
+            let chunk_text = sentences
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    if i == 0 {
+                        s.clone()
+                    } else {
+                        format!(
+                            "{}{}",
+                            connectors[self.rng.gen_range(0..connectors.len())],
+                            s
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
             let chunk_tokens = vocab.encode(&chunk_text);
             chunks.push(chunk_tokens);
 
@@ -302,10 +356,27 @@ impl EntityTrackingGenerator {
         num_chunks: usize,
         quizzes: &mut Vec<(usize, Quiz)>,
     ) {
-        let target_distances: Vec<usize> = vec![1, 2, 3, 5, 7]
+        // Scale target distances with num_chunks to test longer-range recall.
+        // Short sequences: 1,2,3,5,7. Longer: add 10,15,20... up to ~75% of num_chunks.
+        let mut target_distances: Vec<usize> = vec![1, 2, 3, 5, 7]
             .into_iter()
             .filter(|d| *d < num_chunks)
             .collect();
+        if num_chunks >= 12 {
+            target_distances.extend([10].iter().filter(|d| **d < num_chunks));
+        }
+        if num_chunks >= 18 {
+            target_distances.extend([15].iter().filter(|d| **d < num_chunks));
+        }
+        if num_chunks >= 25 {
+            target_distances.push(20);
+            let long_dist = num_chunks * 3 / 4;
+            if long_dist > 20 && long_dist < num_chunks {
+                target_distances.push(long_dist);
+            }
+        }
+        target_distances.sort();
+        target_distances.dedup();
 
         for &target_dist in &target_distances {
             let chunk_idx = if target_dist < num_chunks {
@@ -393,26 +464,17 @@ impl EntityTrackingGenerator {
             types.push(QuizType::ObjectHolder);
         }
 
+        // Contradiction and TemporalDelta both require entity location changes.
+        // Compute once to avoid duplicate logic.
         if chunk_idx >= 2 && snapshots.len() > chunk_idx {
             let earlier_idx = if chunk_idx > 3 { chunk_idx - 3 } else { 0 };
             let earlier = &snapshots[earlier_idx];
             let current = &snapshots[chunk_idx];
-            let has_contradiction = names.iter().any(|name| {
+            let has_location_change = names.iter().any(|name| {
                 earlier.entity_locations.get(*name) != current.entity_locations.get(*name)
             });
-            if has_contradiction {
+            if has_location_change {
                 types.push(QuizType::Contradiction);
-            }
-        }
-
-        if chunk_idx >= 2 && snapshots.len() > chunk_idx {
-            let earlier_idx = if chunk_idx > 3 { chunk_idx - 3 } else { 0 };
-            let earlier = &snapshots[earlier_idx];
-            let current = &snapshots[chunk_idx];
-            let has_delta = names.iter().any(|name| {
-                earlier.entity_locations.get(*name) != current.entity_locations.get(*name)
-            });
-            if has_delta {
                 types.push(QuizType::TemporalDelta);
             }
         }
